@@ -1,0 +1,20 @@
+def print_warnings(warning_messages):
+    for i in warning_messages:
+        print(i)
+
+
+def find_workable_hours_in_month(month_start, month_end, day):
+    try:
+        delta = (month_end - month_start).days  # Calculates the number of days
+        weekend_count = 0
+        while month_start <= month_end:
+            if month_start.isoweekday() == 6:  # 6 = Saturday
+                weekend_count += 1
+            if month_start.isoweekday() == 7:  # 7 = Sunday
+                weekend_count += 1
+            month_start += day
+        workable_hours = (((delta - weekend_count) * 8) + 8)
+    except:
+        print("Script failure: Initializing the 'workable_hours' variable.")
+    return(workable_hours)
+
