@@ -1,0 +1,327 @@
+# Creates timesheets and distribution lists for Clarity close using data from Codex database
+# Created by: David Adil
+# Date Created: June 2021
+
+try:
+    import pandas as pd, warnings, config, glob, getpass, dateutil.relativedelta, get_DF_from_DB, \
+        timesheet_vital_functions
+    warnings.filterwarnings('ignore')
+    from datetime import datetime, date, timedelta
+    from dateutil.relativedelta import relativedelta
+except:
+    print("Please ensure you have the following libraries downloaded and supplemental scripts."
+          "\n dateutil.relativedelta"
+          "\n pandas"
+          "\n warnings"
+          "\n datetime"
+          "\n date"
+          "\n timedelta"
+          "\n relativedelta"
+          "\n configuration file called \"config.py\""
+          "\n supplemental scripts called \"get_DF_from_DB.py\"."
+         )
+    exit()
+
+# Establish global variables - S0
+S0begin = datetime.now()
+beginTime = datetime.now()
+debug_mode = False # True = Test data, False = PROD data
+warning_messages = []
+output_path = '~/Desktop/DTC_Timesheet_Artifacts/Output_for_timesheet_creation/'
+if debug_mode == True:
+    warning = "Debug mode is on. Using test data. Do not load any files to Prod sources."
+    warning_messages.append(warning)
+try:
+    df_list = get_DF_from_DB.load_dfs(debug_mode)
+    codex_df = df_list[0]
+    vendor_df = df_list[1]
+    themes_df = df_list[2]
+    correct_dp_df = df_list[3]
+    ts_autofill_df = df_list[4]
+except:
+    print("Unable to create dataframes from PostGres database. Terminating script.")
+S0end = datetime.now()
+
+# Create file paths & load file into a dataframe (df)- S1
+S1begin = datetime.now()
+try:
+    active_df = codex_df[(codex_df.DTC_Org == "Yes") &
+                         (codex_df.Budget_Group != "International") &
+                         (codex_df.Employment_Type != "Employee Intern") &
+                         (codex_df.Employment_Status == "Active") | (codex_df.Employment_Status == "Active - On Leave")]
+except:
+    print("Something went wrong when filtering the data set for active resources dataframe.")
+    exit()
+if debug_mode == True:
+    current_date = datetime.strptime("2022-04-26", '%Y-%m-%d')
+else:
+    current_date = datetime.now()
+# Finding the duration of close
+day = timedelta(days=1)
+close_month_start = (current_date - dateutil.relativedelta.relativedelta(months=1)).strftime('%B_%Y')
+previous_close_date = datetime.strptime(config.closedate_ref[close_month_start], '%Y-%m-%d') # Finds previous close day
+month_end = current_date + (day * 5) # Tuesday to Sunday is always 5 days away
+for dayCounter in range(1, 8):
+    checkday = previous_close_date - (dayCounter * day)
+    if checkday.isoweekday() == 1:  # 1 = Monday
+        month_start = checkday
+        break  # Finds first Monday of the month based on the Clarity calendar
+try:
+    departures_df = codex_df[(codex_df.DTC_Org == "Yes") &
+                             (codex_df.Budget_Group != "International") &
+                             (codex_df.Employment_Type == "Employee") &
+                             (codex_df.Employment_Status == "Departed")]
+    departures_df['Departure_Date'] = pd.to_datetime(departures_df['Departure_Date'], format='%Y-%m-%d')
+except:
+    print("Something went wrong when filtering the data set for departed resources dataframe.")
+    exit()
+try:
+    # Isolate close month duration
+    departures_df = departures_df.loc[(departures_df['Departure_Date'] >= month_start) &
+                                      (departures_df['Departure_Date'] < month_end)]
+except:
+    print("\nSomething went wrong when finding the close month duration in departures dataframe.")
+    exit()
+
+workable_hours = timesheet_vital_functions.find_workable_hours_in_month(month_start, month_end, day)
+try:
+    # int for rounding in months non-divisible by 8, default round up at 0.5 intervals
+    departures_df['Departure_Delta'] = departures_df.apply(
+                                                            lambda x: int((timesheet_vital_functions.
+                                                                   find_workable_hours_in_month(month_start,
+                                                                   x['Departure_Date'], day) / workable_hours)*100),
+                                                            axis=1
+                                                          )
+except:
+    departures_df['Departure_Delta'] = 1
+data_df = active_df.append(departures_df) # Create holistic df for close
+S1end = datetime.now()
+
+#Corrected data provider as manager - S2
+S2begin = datetime.now()
+correct_dp_df.columns = ['Resource_Name', 'c_Reporting_Manager'] #renaming column in the df
+combo = data_df.merge(correct_dp_df, on = 'Resource_Name', how = 'left')
+combo['final_man'] = combo.apply(
+                                    lambda x: x['Reporting_Manager']
+                                    if pd.isnull(x['c_Reporting_Manager'])
+                                    else x['c_Reporting_Manager'], axis = 1
+                                )
+S2end = datetime.now()
+
+#Remove unnecessary columns for data manipulation - S3
+S3begin = datetime.now()
+filtered_data = combo[["Codex_ID", "Clarity_Resource_ID", "Resource_Name", "Preferred_Name", "Job_Title", "final_man",
+                       "Department_VP", "Employment_Type", "Budget_Group", "Contract_Agency", "Contract_Rate",
+                       "Contract_Type", "Email", "Employment_Status", "Departure_Delta", "Start_Date",
+                       "Counting_Group"]]
+filtered_data.columns = ["Codex_ID", "Clarity_Resource_ID", "Resource_Name", "Preferred_Name", "Job_Title",
+                         "Reporting_Manager", "Department_VP", "Employment_Type", "Budget_Group", "Contract_Agency",
+                         "Contract_Rate", "Contract_Type", "Email", "Employment_Status", "Departure_Delta",
+                         "Start_Date", "Counting_Group"]
+S3end = datetime.now()
+
+# If employee name is a name in reporting manager column, overrides manager w/resource - S4
+S4begin = datetime.now()
+managers = set(filtered_data['Reporting_Manager'].tolist())
+filtered_data['Data Provider'] = filtered_data.apply(
+                                                        lambda x: x['Resource_Name']\
+                                                        if x['Resource_Name'] in managers
+                                                        else x['Reporting_Manager'], axis = 1
+                                                    )
+filtered_data = filtered_data.sort_values(by = ['Data Provider', 'Resource_Name'])
+S4end = datetime.now()
+
+#List of output columns - S5
+S5begin = datetime.now()
+update_header = {
+                    'Resource_Name': 'Resource Name',
+                    'Job_Title': 'Title'
+                 }
+filtered_data.rename(columns = update_header, inplace = True)
+filtered_data['Theme'] = ["" for i in range(len(filtered_data))]
+filtered_data['TaskName'] = ["" for i in range(len(filtered_data))]
+filtered_data['% Time'] = ["" for i in range(len(filtered_data))]
+filtered_data['Epic'] = ["" for i in range(len(filtered_data))]
+filtered_data['Hours'] = ["" for i in range(len(filtered_data))]
+filtered_data['Notes'] = ["" for i in range(len(filtered_data))]
+emp_output_col = ["Resource Name", "Title", "Data Provider", "Theme", "Epic", "TaskName", "% Time", "Notes",
+                  "Employment_Status", "Departure_Delta", "Start_Date", "Counting_Group", "Codex_ID"]
+cons_output_col = ["Codex_ID", "Resource Name", "Title", "Data Provider", "Theme", "Epic", "TaskName", "Hours", "Notes"]
+S5end = datetime.now()
+
+# Employee & Project-Based Consultant df manipulations - S6
+S6begin = datetime.now()
+employment_type_list = ["Employee", "Globant", "Reaktor"]
+emp_df = filtered_data[(filtered_data.Employment_Type == employment_type_list[0])][emp_output_col]
+filtered_data_cons = filtered_data[(filtered_data.Employment_Type == "Consultant")]
+cons_globant_df = filtered_data_cons[(filtered_data_cons.Contract_Agency == employment_type_list[1])][cons_output_col]
+cons_reaktor_df = filtered_data_cons[(filtered_data_cons.Contract_Agency == employment_type_list[2])][cons_output_col]
+S6end = datetime.now()
+
+# Assign specific values to specific employees and give all resources 2 rows - S7
+S7begin = datetime.now()
+#l = ['Dir', 'VP', 'Head of Ads and Platforms', 'General Manager', 'Account Executive', 'Writer',
+#     'Executive Assistant', 'Operations Manager'] # list of excludable titles for autofill fuction
+ts_autofill_df = ts_autofill_df['Resource_Name'].tolist()
+def autofill(row):
+    for name in ts_autofill_df:
+        if name in row:
+            return True
+            break
+    return False
+emp_df = pd.concat([emp_df, emp_df.assign(Theme = "Technology General")],
+                   ignore_index = True).sort_values(["Data Provider", "Resource Name", "Theme"])
+emp_df['TaskName'] = emp_df.apply(
+                                    lambda x: 'Administrative'
+                                    if (x['Theme'] == 'Technology General')
+                                    else "", axis = 1
+                                 )
+emp_df['% Time'] = emp_df.apply(
+                                    lambda x: '100%'
+                                    if (x['Theme'] == 'Technology General')
+                                        and (x['TaskName'] == 'Administrative')
+                                        and (autofill(str(x)))
+                                    else x['% Time'], axis = 1
+                               )
+#TODO Abby needs to inform us if "Technical Writers" is CapEx or OpEx
+emp_df['% Time'] = emp_df.apply(
+                                    lambda x: '100%'
+                                    if (x['Theme'] == 'Technology General')
+                                        and (x['TaskName'] == 'Administrative')
+                                        and (x['Counting_Group'] == 'GTO') |
+                                            (x['Counting_Group'] == 'Jason Press Other (Directs, EA Team)') |
+                                            (x['Counting_Group'] == 'Liberty Other (Leadlay, Johnson, Designers)') |
+                                            (x['Counting_Group'] == 'Ottawa Sales (Sean Lynch\'s Group)') |
+                                            (x['Counting_Group'] == 'Ottawa Tech Ops and Programs') |
+                                            (x['Counting_Group'] == 'Tech Ops (Jaya, Latrina)')
+                                    else x['% Time'], axis = 1
+                               )
+emp_df['% Time'] = emp_df.apply(
+                                    lambda x: '100%'
+                                    if (x['Theme'] == 'Technology General')
+                                        and (x['TaskName'] == 'Administrative')
+                                        and (x['Employment_Status'] == 'Active - On Leave')
+                                    else x['% Time'], axis = 1
+                               )
+emp_df['Notes'] = emp_df.apply(
+                                    lambda x: 'Resource on parental leave.'
+                                    if (x['Employment_Status'] == 'Active - On Leave')
+                                    else x['Notes'], axis = 1
+                              )
+emp_df['Notes'] = emp_df.apply(
+                                    lambda x: 'Resource departed, maximum %Time is ' +
+                                              str(int(x['Departure_Delta'])) + '%'
+                                    if (x['Employment_Status'] == 'Departed')
+                                    else x['Notes'], axis = 1
+                              )
+emp_df = emp_df.drop(['Employment_Status', 'Departure_Delta', 'Start_Date', 'Counting_Group'], axis = 1)
+S7end = datetime.now()
+
+# Create distribution lists - S8
+S8begin = datetime.now()
+#Staff Aug & Intive Distro
+clarityUser_df = pd.DataFrame(data_df[(data_df.Contract_Type == 'Staff Aug') &
+                                      (data_df.Employment_Type == 'Consultant')])
+temp_clarityUser_df = pd.DataFrame(data_df[(data_df.Contract_Agency == 'Intive')])
+clarityUser_df = clarityUser_df.append(temp_clarityUser_df)
+clarityUser_df = clarityUser_df.merge(data_df, left_on = 'Reporting_Manager', right_on = 'Resource_Name')
+clarityUser_df.drop(clarityUser_df.columns[0], axis = 1, inplace = True)
+df = pd.DataFrame(clarityUser_df, columns = ['Email_x','Email_y'])
+df.rename(columns = {'Email_x': 'Clarity_Consultant_Emails'}, inplace = True)
+df.rename(columns = {'Email_y': 'Clarity_RM_Emails'}, inplace = True)
+dfCons = df['Clarity_Consultant_Emails'].drop_duplicates()
+dfRM = df['Clarity_RM_Emails'].drop_duplicates()
+
+#Employee Distro
+temp_emp_df = emp_df[["Resource Name", "Data Provider"]]
+temp_emp_df.rename(columns = {'Resource Name': 'drop', 'Data Provider': 'Resource_Name'}, inplace = True)
+temp_emp_df = temp_emp_df.merge(data_df, left_on = 'Resource_Name', right_on = 'Resource_Name')
+temp_emp_df.drop(temp_emp_df.index[(temp_emp_df['Counting_Group'] == "GTO") |
+                                   (temp_emp_df['Counting_Group'] == "Liberty Other (Leadlay, Johnson, Designers)") |
+                                   (temp_emp_df['Counting_Group'] == "Ottawa Sales (Sean Lynch\'s Group") |
+                                   (temp_emp_df['Counting_Group'] == "Ottawa Tech Ops and Programs") |
+                                   (temp_emp_df['Counting_Group'] == "Tech Ops (Jaya, Latrina)")], inplace = True)
+df = pd.DataFrame(temp_emp_df, columns = ['Email'])
+df.rename(columns = {'Email': 'Emp_Data_Providers_Emails'}, inplace = True)
+dfEmp = df['Emp_Data_Providers_Emails'].drop_duplicates()
+
+def create_dl_lists(input_df):
+    temp_df = input_df[["Resource Name", "Data Provider"]]
+    temp_df.rename(columns={'Resource Name': 'drop', 'Data Provider': 'Resource_Name'}, inplace=True)
+    temp_df = temp_df.merge(data_df, left_on='Resource_Name', right_on='Resource_Name')
+    df = pd.DataFrame(temp_df, columns=['Email'])
+    df.rename(columns={'Email': 'Reaktor_Data_Providers_Emails'}, inplace=True)
+    df = df['Reaktor_Data_Providers_Emails'].drop_duplicates()
+    return df
+
+dfGlo = create_dl_lists(cons_globant_df) # Globant Distro
+dfRtr = create_dl_lists(cons_reaktor_df) # Reaktor Distro
+S8end = datetime.now()
+
+# Add preferred name where first name is - S9
+S9begin = datetime.now()
+def add_preferred_names(emp_df, column_name):
+    emp_df = emp_df.merge(data_df, left_on = column_name, right_on = 'Resource_Name')
+    emp_df.rename(columns={'Codex_ID_x': 'Codex_ID'}, inplace=True)
+    col_list = ['Resource Name', 'Title', 'Data Provider', 'Theme', 'Epic', 'TaskName', '% Time', 'Notes',
+                'Preferred_Name', 'Codex_ID']
+    emp_df = emp_df[col_list]
+
+    emp_df.loc[~emp_df['Preferred_Name'].isna(), column_name] = \
+        emp_df[~emp_df['Preferred_Name'].isna()][column_name].str.extract('(.*,)').squeeze() + ' ' + \
+        emp_df['Preferred_Name']
+    emp_df = emp_df.drop(['Preferred_Name'], axis=1)
+    return emp_df
+
+emp_df = add_preferred_names(emp_df, emp_df.columns[0])
+emp_df = add_preferred_names(emp_df, emp_df.columns[2])
+emp_df = emp_df.reindex(columns=['Codex_ID', 'Resource Name', 'Title', 'Data Provider', 'Theme', 'Epic', 'TaskName',
+                                 '% Time', 'Notes'])
+S9end = datetime.now()
+
+# Create xlsx files - S10
+S10begin = datetime.now()
+with pd.ExcelWriter(output_path + 'Email_Distribution_List.xlsx', engine = 'xlsxwriter') as writer:
+    dfCons.to_excel(writer, sheet_name = 'Clarity_Consultant_Emails', index = False)
+    dfRM.to_excel(writer, sheet_name = 'Clarity_RM_Emails', index = False)
+    dfEmp.to_excel(writer, sheet_name = 'Emp_Data_Providers_Emails', index = False)
+    dfGlo.to_excel(writer, sheet_name = 'Globant_Data_Providers_Emails', index = False)
+    dfRtr.to_excel(writer, sheet_name = 'Reaktor_Data_Providers_Emails', index = False)
+print("Email distribution lists created.")
+
+with pd.ExcelWriter(output_path + 'Employee_and_Project_Cons_Google_Sheets.xlsx', engine = 'xlsxwriter') as writer:
+    emp_df.to_excel(writer, sheet_name = employment_type_list[0], index = False)
+    cons_globant_df.to_excel(writer, sheet_name = employment_type_list[1], index = False)
+    cons_reaktor_df.to_excel(writer, sheet_name = employment_type_list[2], index = False)
+print(employment_type_list[0] + ", " + employment_type_list[1] + ", " + employment_type_list[2] +
+      " timesheets created.")
+S10end = datetime.now()
+
+# Create xlsx files - S11
+S11begin = datetime.now()
+# TODO create email with dl list and send out using smtp server
+# TODO start small and save email message to desktop then move to smtp server = https://stackoverflow.com/questions/20956424/how-do-i-generate-and-open-an-outlook-email-with-python-but-do-not-send
+# TODO create log file with who is being emailed and due dates listed in email
+# TODO find out if delayed or schedule send is available for smtp configuration if not, then setup reminder email
+#  section in another script = https://stackoverflow.com/questions/52022134/how-do-i-schedule-an-email-to-send-at-a-certain-time-using-cron-and-smtp-in-pyt
+S11end = datetime.now()
+
+# End of script
+print("\nFiles created in path \"/Desktop/DTC_Timesheet_Artifacts/Output_for_timesheet_creation/\"")
+if debug_mode == True:
+    print("Script total run time was " + str(datetime.now() - beginTime))
+    print("S0 run time was " + str(S0end - S0begin))
+    print("S1 run time was " + str(S1end - S1begin))
+    print("S2 run time was " + str(S2end - S2begin))
+    print("S3 run time was " + str(S3end - S3begin))
+    print("S4 run time was " + str(S4end - S4begin))
+    print("S5 run time was " + str(S5end - S5begin))
+    print("S6 run time was " + str(S6end - S6begin))
+    print("S7 run time was " + str(S7end - S7begin))
+    print("S8 run time was " + str(S8end - S8begin))
+    print("S9 run time was " + str(S9end - S9begin))
+    print("S10 run time was " + str(S10end - S10begin))
+    print("S11 run time was " + str(S11end - S11begin))
+    # print("S12 run time was " + str(S12end - S12begin))
+    print("THIS WAS USING TEST DATA. " + f"{debug_mode=}")
+exit()
