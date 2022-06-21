@@ -1,0 +1,17 @@
+import pandas as pd
+df = pd.read_csv('LCFINActualUtilizationbyProjectwithTotals-159.csv', skiprows = 8) # Skips the excess data at top
+df.drop(df.columns[[0, 1, 4, 6]], axis = 1, inplace = True) # Drops unneed columns
+df.dropna(inplace = True) # Drops entire row if there is a blank
+df.columns = ["TaskName", "Resource Name", "Hours"]
+df['Theme'] = ["Technology General" for i in range(len(df))]  # Set all Themes to Technology General
+df['Resource Name'] = df['Resource Name'].apply(
+                                                    lambda x: x.split()[2] + ", " + x.split()[0] + " " + x.split()[1]
+                                                    if len(x.split()) == 3
+                                                    else x.split()[1] + ", " + x.split()[0]
+                                                )
+
+tasks_dict = pd.read_excel('NetSuite to Clarity Tasks.xlsx').to_dict(orient='split')
+df['TaskName'] = df['TaskName'].map(tasks_dict)
+output_path = '~/Desktop/'
+with pd.ExcelWriter(output_path + 'netsuite_output.xlsx', engine = 'xlsxwriter') as writer:
+    df.to_excel(writer, index = False)
