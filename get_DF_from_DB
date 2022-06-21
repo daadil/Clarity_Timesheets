@@ -1,0 +1,54 @@
+# Load dataframe from Codex database
+# David Adil June 2022
+import config, pandas as pd, getpass, glob
+from sqlalchemy import create_engine
+
+# Establish DB connection - S0
+def connect_to_db():
+    try:
+        conn_string = f'postgresql://{config.per_pg_db_user}:{config.per_pg_db_pwd}@{config.per_pg_db_host}:'\
+                      f'{config.per_pg_db_port}/{config.per_pg_db_name}'
+        engine = create_engine(conn_string)
+        connection = engine.connect()
+    except:
+        # warning = "Connection to database failed. Set VPN to Las Vegas."
+        print("failed to connect")
+    return connection # TODO add warning message and pass back to main then in script failure, display all warning messages
+
+# Create dfs from DB- S1
+def load_dfs(debug_mode):
+    try:
+        connection = connect_to_db()
+    except:
+        username = getpass.getuser()
+        extension = f"/Users/{username}/Downloads/"
+        excel_file = glob.glob(f'{extension}DTC_CODEX_v*.xlsx')[0]
+        f = open(excel_file, 'rb')
+        try:
+            codex_df = pd.read_excel(f, sheet_name='CODEX')
+            title_mapping_df = pd.read_excel(f, sheet_name='Job_Family')
+            vendor_df = pd.read_excel(f, sheet_name='Vendors')
+            themes_df = pd.read_excel(f, sheet_name='Themes')
+            correct_dp_df = pd.read_excel(f, sheet_name='Correct_Data_Providers')
+            ts_autofill_df = pd.read_excel(f, sheet_name='timesheet_autofill')
+            f.close()
+            df_list = [codex_df, vendor_df, themes_df, correct_dp_df, ts_autofill_df, title_mapping_df]
+            return df_list
+        except:
+            print("Missing Codex Excel file from Downloads Folder. Terminating script.")
+    # warning = connection[1]
+    try:
+        themes_df = pd.read_sql("select * from codex_themes", connection)
+        title_mapping_df = pd.read_sql("select * from codex_title_mapping", connection)
+        vendor_df = pd.read_sql("select * from codex_vendor", connection)
+        correct_dp_df = pd.read_sql("select * from codex_correct_dp", connection)
+        ts_autofill_df = pd.read_sql("select * from codex_ts_autofill", connection)
+        if debug_mode == True:
+            codex_df = pd.read_sql("select * from codex_codex_test", connection) # TODO Missing Contract Rate information for script to run
+        else:
+            codex_df = pd.read_sql("select * from codex_codex", connection)  # TODO Missing Contract Rate information for script to run
+        df_list = [codex_df, vendor_df, themes_df, correct_dp_df, ts_autofill_df, title_mapping_df]
+    except:
+        print("Unable to create dataframes from PostGres database. Terminating script.")
+    connection.close()
+    return df_list
