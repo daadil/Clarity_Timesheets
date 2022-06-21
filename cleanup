@@ -1,0 +1,497 @@
+#Created by: David Adil
+#Date Created: June 2021
+try:
+    import glob, pandas as pd, sys, config, getpass, docx, get_DF_from_DB, timesheet_vital_functions
+    from datetime import datetime, timedelta
+except:
+    print("Please ensure you have the following libraries downloaded and files."
+          "\n glob"
+          "\n pandas"
+          "\n sys"
+          "\n getpass"
+          "\n docx"
+          "\n Configuration file called \"config.py\"."
+          "\n Supplemental scripts called \"get_DF_from_DB.py\" & \"timesheet_vital_functions.py\""
+         )
+    exit()
+beginTime = datetime.now()
+debug_mode = False # True = Test data, False = PROD data
+warning_messages = []
+start_times = []
+end_times = []
+if debug_mode == True:
+    warning = "Debug mode is on. Using test data. Do not load any files to Prod sources."
+    warning_messages.append(warning)
+
+# Calculate close timeframe, set weekstart & file names - S1
+S1begin = datetime.now()
+start_times.append(datetime.now())
+def run_weekstart(argument):
+    try:
+        close_month = argument.replace('_', ' ')
+        month = argument[:-5] # Isolate month
+        if month == "January":  # New year handler
+            year = str(int(argument[-4:]) - 1) # Isolate year
+            last_month = config.months[(config.months.index(month) - 1)] # Calculates previous month
+            current_close_date = datetime.strptime(config.closedate_ref[argument], '%Y-%m-%d')
+            last_month_close_date = datetime.strptime(
+                (config.closedate_ref[str(config.months[(config.months.index(month) - 1)] + '_' + year)]),
+                '%Y-%m-%d')
+        else:
+            year = argument[-4:] # Isolate year
+            last_month = config.months[(config.months.index(month) - 1)] # Calculates previous month
+            current_close_date = datetime.strptime(config.closedate_ref[argument], '%Y-%m-%d')
+            last_month_close_date = datetime.strptime(
+                (config.closedate_ref[str(config.months[(config.months.index(month) - 1)] + '_' + year)]),
+                '%Y-%m-%d')
+        day = timedelta(days=1)
+        target_close_timesheet_date = current_close_date - day  # DTC target close timesheet date
+        try:
+            n = 0
+            temp = last_month_close_date - (4 * day)
+            while n < 31:
+                if temp.isoweekday() == 1:  # 1 = Monday
+                    start_timesheet_collection_date = temp
+                    break
+                n += 1
+                temp += day
+        except:
+            print("Script failure: Initializing the 'start_timesheet_collection_date' variable.")
+        try:
+            for dayCounter in range(1, 8):
+                checkday = current_close_date - (dayCounter * day)
+                if checkday.isoweekday() == 7:  # 7 = Sunday
+                    weekstart = checkday
+                    target_open_timesheet_date = checkday - (4 * day)
+                    break # Finds first Sunday of week close. Then subtracts by 4 days to get Wednesday's date
+        except:
+            print("Script failure: Initializing the 'weekstart' & 'target_open_timesheet_date' variables.")
+        try:
+            delta = (weekstart - start_timesheet_collection_date).days  # Calculates the number of days
+            weekend_count = 0
+            start_date = start_timesheet_collection_date
+            while start_date <= weekstart:
+                if start_date.isoweekday() == 6:  # 6 = Saturday
+                    weekend_count += 1
+                if start_date.isoweekday() == 7:  # 7 = Sunday
+                    weekend_count += 1
+                start_date += day
+            workable_hours = (((delta - weekend_count) * 8) + 8)
+        except:
+            print("Script failure: Initializing the 'workable_hours' variable.")
+            
+        # potential outcome of this section:
+        # -slack bots know when to send messages and can send them
+        # -gentle nudging towards individuals who don't fill out timesheets on time
+        # -more accurate accounting of hours inputted by DTC FTEs
+        # -break into two parts, first half of knowing milestones goes to timesheet_creation, second goes to timesheet_cleanup for hours
+        #  both of these scripts can interact with a slack bot by waiting for a specific key command then launch messages to the right people
+        #  via DMs or in Org wide channels.
+
+        if month == 'September':  # Warning message that dictionary requires update
+            print("Warning, Clarity close calendar in this script requires update ASAP. Update via inputting values "
+                  "into the dictionary within the script called \"closeweekstart_ref\" and calculate the "
+                  "\"workable_hrs_ref\". Information for close calendar is available in Clarity's knowledge store. "
+                  "Please note, you must input the Sunday before the close date for this script to run correctly.")
+        return last_month, close_month, year, weekstart, month, workable_hours, target_open_timesheet_date,\
+               target_close_timesheet_date, start_timesheet_collection_date
+    except:
+        print("Invalid close month year combination. Please enter the month & year written exactly as below.")
+        print(list(config.closedate_ref.keys()))
+        exit()
+if (len(sys.argv) < 2):
+    print("Usage: timesheet_cleanup.py [Month_Year]")
+    print("This program requires a month year combination in order to operate. Acceptable date values are below. "
+          "The script will now terminate.")
+    print(list(config.closedate_ref.keys()))
+    exit()
+else:
+    argument = run_weekstart(sys.argv[1])
+    last_month = str(argument[0].strip())
+    close_month = str(argument[1].strip())
+    year = argument[2].strip()
+    weekstart = argument[3].strftime('%Y-%m-%d')
+    month = str(argument[4].strip())
+    workable_hours = int(argument[5])
+    target_open_timesheet_date = argument[6].strftime('%Y-%m-%d')
+    target_close_timesheet_date = argument[7].strftime('%Y-%m-%d')
+    start_timesheet_collection_date = argument[8].strftime('%Y-%m-%d')
+S1end = datetime.now()
+end_times.append(datetime.now())
+
+# Ask file paths & naming conventions - S2
+S2begin = datetime.now()
+start_times.append(datetime.now())
+if debug_mode == True:
+    download_path = '~/Downloads/Test_Data'
+else:
+    download_path = '~/Downloads/'
+input_path = '~/Desktop/DTC_Timesheet_Artifacts/Master/'
+output_path = '~/Desktop/DTC_Timesheet_Artifacts/Output_for_timesheet_cleanup/'
+capTracker = " Resources - Capitalization Tracker"
+fileName = "DTC Timesheets Bulk Cons and FTEs "
+S2end = datetime.now()
+end_times.append(datetime.now())
+
+# Load downloaded files & documents version Codex into dataframes (df) - S3
+S3begin = datetime.now()
+start_times.append(datetime.now())
+try:
+    username = getpass.getuser()
+    extension = f"/Users/{username}/Downloads/"
+except:
+    warning = "Unable to establish path to Downloads folder."
+    warning_messages.append(warning)
+
+def create_dfs(resource):
+    try:
+        df = pd.read_excel(extension + resource + capTracker + ".xlsx", sheet_name = close_month)
+        df['Hours'] = df.apply(
+                                lambda x: '0'
+                                if (x['Hours'] == '')
+                                else x['Hours'], axis = 1
+                              )
+        try:
+            df['Hours'] = df['Hours'].astype("float")
+        except:
+            warning = f"Check the Hours column in the {resource} Timesheet. Make sure the Hours column does not " \
+                      f"contain any non numerical values. Script will stop until this is fixed."
+            warning_messages.append(warning)
+            exit()
+        df['Input_Source'] = [resource for i in range(len(df))]
+    except:
+        warning = f"Check if you downloaded the {resource} Timesheet. Remember to input the same month year in the " \
+                  f"script as it's displayed on the Google Sheet tab. Script will be missing {resource} timesheets."
+        warning_messages.append(warning)
+    return df
+
+globant_df = create_dfs("Globant")
+reaktor_df = create_dfs("Reaktor")
+
+try:
+    employee_df = pd.read_excel(extension + "Employee" + capTracker + ".xlsx", sheet_name = close_month)
+
+    try:
+        employee_df['% Time'] = employee_df['% Time'].notnull().astype(float) # Sets blank to zero
+    except:
+        warning = "Check the Hours column in the Employee Timesheet. Make sure the Hours column does not contain " \
+                  "any non numerical values. Script will stop until this is fixed."
+        warning_messages.append(warning)
+        exit()
+    employee_df['% Time'] = employee_df.apply(
+                                                    lambda x: x['% Time'] * 100
+                                                    if (x['% Time'] <= 1)
+                                                    else x['% Time'], axis = 1
+                                             ) # handles input such as 0.9 and converts to 90
+    close_month_underscore = close_month.replace(' ','_')
+    employee_df['% Time'] = ((employee_df['% Time'] / 100) * workable_hours) # % time to workable hours in close month
+    employee_df.rename(columns={'% Time': 'Hours'}, inplace=True)
+    employee_df['Input_Source'] = ["Employee" for i in range(len(employee_df))]
+except:
+    warning = "Check if you downloaded the Employee's Timesheet. Remember to input the same month year in the script " \
+              "as it's displayed on the Google Sheet tab."
+    warning_messages.append(warning)
+try:
+    testFileName = output_path + fileName + last_month + " " + year + " Missing Data.xlsx"
+    last_month_df = pd.read_excel(testFileName, sheet_name = "RIDs")
+    last_month_df = last_month_df.drop(['WeekStart', 'RID'], axis = 1)
+except:
+    warning = "No missing RIDs file found from last month."
+    warning_messages.append(warning)
+    last_month_df = pd.DataFrame()
+try:
+    df_list = get_DF_from_DB.load_dfs(debug_mode)
+    codex_df = df_list[0]
+    themes_df = df_list[2]
+except:
+    warning = "Unable to create dataframes from PostGres database. Terminating script."
+    warning_messages.append(warning)
+S3end = datetime.now()
+end_times.append(datetime.now())
+
+# Combine all dfs into one - S4
+S4begin = datetime.now()
+start_times.append(datetime.now())
+frames = [globant_df, reaktor_df, employee_df]
+full_df = pd.concat(frames)
+S4end = datetime.now()
+end_times.append(datetime.now())
+
+# Data augmentation - remove unneeded columns - S5
+S5begin = datetime.now()
+start_times.append(datetime.now())
+full_df = full_df[["Codex_ID", "Resource Name", "Theme", "TaskName", "Hours", "Input_Source", "Notes"]]
+S5end = datetime.now()
+end_times.append(datetime.now())
+
+# Assigning TaskNames CapEx / OpEx tags - S6
+S6begin = datetime.now()
+start_times.append(datetime.now())
+full_df['TaskName'] = full_df.apply(
+                                        lambda x: config.taskName[1]
+                                        if (x['TaskName'] == config.DTCtaskName[0])
+                                        else x['TaskName'], axis=1
+                                    ) # Changes "Project Management" to the Clarity version of "Project Management"
+full_df['TaskName'] = full_df.apply(
+                                        lambda x: config.taskName[2]
+                                        if (x['TaskName'] == config.DTCtaskName[1])
+                                        else x['TaskName'], axis=1
+                                    ) # Changes "Testing" to the Clarity version of "Testing"
+i = 0
+for index in enumerate(config.taskName):
+    full_df['TaskName'] = full_df.apply(
+                                            lambda x: config.taskName[i] + config.chargeCodeTag[1]
+                                            if (x['TaskName'] == config.taskName[i])
+                                            else x['TaskName'], axis = 1
+                                       )
+    i = i + 1 # Assigns the task the "(OPEX)" charge code
+i = 0
+for index in enumerate(config.taskName):
+    if i == 3:
+        break
+    else:
+        full_df['TaskName'] = full_df.apply(
+                                                lambda x: config.taskName[i] + config.chargeCodeTag[0]
+                                                if (x['TaskName'] == config.taskName[i] + config.chargeCodeTag[1])
+                                                   and (x['Theme'] != 'Technology General')
+                                                else x['TaskName'], axis=1
+                                            )
+        i = i + 1 # Assigns theme that isn't "Tech Gen" the "(CAPEX)" charge code for the CapEx tasks (1st 3 entries)
+S6end = datetime.now()
+end_times.append(datetime.now())
+
+# Find and replace Theme name with ProjectID - S7
+S7begin = datetime.now()
+start_times.append(datetime.now())
+full_df = pd.merge(full_df, themes_df, on = "Theme", how = 'left')
+full_df.rename(columns={'Clarity_ProjectID': 'ProjectID'}, inplace = True)
+full_df['ProjectID'] = full_df.apply(
+                                        lambda x: 'Invalid theme entered. Check source file and/or Codex tab \"Theme\"'
+                                        if (x['ProjectID'] == "")
+                                        else x['ProjectID'], axis = 1
+                                    )
+S7end = datetime.now()
+end_times.append(datetime.now())
+
+# Adds week start for ingest if missing - S8
+S8begin = datetime.now()
+start_times.append(datetime.now())
+full_df['WeekStart'] = [weekstart for i in range(len(full_df))]
+full_df['PhaseName'] = ["" for i in range(len(full_df))]
+S8end = datetime.now()
+end_times.append(datetime.now())
+
+# Add RID based on resource name - S9
+S9begin = datetime.now()
+start_times.append(datetime.now())
+full_df = pd.merge(full_df, codex_df, on = 'Codex_ID', how = 'inner')
+full_df.rename(columns = {'Clarity_Resource_ID': 'ResourceID'}, inplace = True)
+full_df = full_df[["WeekStart", "Codex_ID", "ResourceID", "Resource Name", "ProjectID", "TaskName", "Hours",
+                   "Input_Source", "PhaseName", "Notes"]]
+S9end = datetime.now()
+end_times.append(datetime.now())
+
+# # Employees are maxed out at 100% allocation - S10
+# S10begin = datetime.now()
+# aggregated_hours = full_df.groupby(by = ['ResourceID'])['Hours'].sum().reset_index()
+#
+# full_df1 = full_df.copy()
+# print(full_df1.head())
+# print(type(full_df1['TaskName'].tolist()[0]))
+# full_df1['TaskName'] = full_df1.apply(
+#                                         lambda x: "CapEx"
+#                                         if '(CapEx)' in x['TaskName']
+#                                         else "", axis = 1
+#                                     )
+# # full_df1['TaskName'] = full_df1.apply(
+# #                                         lambda x: "OpEx"
+# #                                         if (('OpEx' in x['TaskName']))
+# #                                         else "", axis = 1
+# #                                     )
+# with pd.ExcelWriter(output_path + 'allocation.xlsx', engine = 'xlsxwriter') as writer:
+#     full_df1.to_excel(writer, index = False)
+#
+# aggregated_hours = full_df1.groupby(by = ['Resource Name'])['Hours'].sum().reset_index()
+# allocation_df = aggregated_hours.copy()
+# allocation_df['Hours'] = round(allocation_df['Hours'] / workable_hours, 2)
+# print(allocation_df['Hours'].head())
+# with pd.ExcelWriter(output_path + 'allocation.xlsx', engine = 'xlsxwriter') as writer:
+#     allocation_df.to_excel(writer, index = False)
+#
+#
+# filtered_hours = aggregated_hours[aggregated_hours['Hours'] < workable_hours]
+# missing_Hours_df0 = filtered_hours.merge(full_df, on = 'ResourceID', how = 'outer').dropna().drop(['Hours_x'], axis = 1)
+#
+# # print(workable_hours)
+# # print(missing_Hours_df0.head())
+# with pd.ExcelWriter(output_path + 'check missing hours.xlsx', engine = 'xlsxwriter') as writer:
+#     missing_Hours_df0.to_excel(writer, index = False)
+#
+# missing_Hours_df0.rename(columns = {'Hours_y': 'Hours'}, inplace = True)
+# employment_df = codex_df[(codex_df.Employment_Status == "Active") &
+#                          (codex_df.Employment_Type == "Employee")][["Clarity_Resource_ID", "Employment_Type",
+#                                                                     "Employment_Status"]]
+# employment_df.rename(columns = {'Clarity_Resource_ID': 'ResourceID'}, inplace = True)
+# missing_Hours_df0 = missing_Hours_df0.merge(employment_df, on = 'ResourceID', how = 'inner')
+# missing_Hours_df0 = missing_Hours_df0[(missing_Hours_df0.Employment_Type == "Employee")][["ResourceID", "Resource Name",
+#                                                                                           "ProjectID", "TaskName",
+#                                                                                           "Hours", "WeekStart"]]
+# full_df = full_df[~full_df.ResourceID.isin(missing_Hours_df0.ResourceID.tolist())]
+# S10end = datetime.now()
+#
+# # Find resources missing information, remove them from parent df, & create supplemental (sup) df and export - S11
+# S11begin = datetime.now()
+# # Find missing Hours remove from parent df, send to sup df
+# missing_Hours_df1 = full_df[(full_df.Hours.isnull())]
+# if (missing_Hours_df1.empty != True):
+#     full_df = full_df[(full_df.Hours.notnull())]
+#     print("Found resources with missing hours. Missing hours removed from this month's file to be uploaded. "
+#           "Reach out to the Data Provider to collect the missing hours.")
+# else:
+#     print("No resources found missing hours.")
+# # frames = (missing_Hours_df0, missing_Hours_df1)
+# missing_Hours_df = pd.concat(frames)
+#
+# # Find missing ProjectIDs or Tasks remove them from parent df
+# missing_ProjectandTask_df = full_df[(full_df.ProjectID.isnull()) | (full_df.TaskName.isnull())]
+# if (missing_ProjectandTask_df.empty != True):
+#     full_df = full_df[(full_df.ProjectID.notnull()) | (full_df.TaskName.notnull())]
+#     print("Found Resources with missing Themes and/or Tasks. Missing Themes and/or Tasks will be removed from this "
+#           "month's file to be uploaded. Reach out to the Data Provider to collect the missing hours.")
+# else:
+#     print("No resources found missing ProjectIDs or Task Names.")
+#
+# # Find missing RID remove them from parent df, send to sup df
+# missing_RID_df = full_df[(full_df.ResourceID.isnull())]
+# if (missing_RID_df.empty != True):
+#     full_df = full_df[(full_df.ResourceID.notnull())]
+#     print("Found Resources with missing RID#s. Missing ResourceID resources will be removed from this month's "
+#           "file to be uploaded. Please create RIDs for these resources in Clarity. This group will "
+#           "be added to next month's close file.")
+# else:
+#     print("No resources found missing RIDs.")
+#
+# # Remove missing RIDs from parent df and add to missing RID values
+# missing_RID_df1 = full_df[(full_df.ResourceID == '[Required]')]
+# missing_RID_df = missing_RID_df.append(missing_RID_df1)
+# full_df = full_df[(full_df.ResourceID != '[Required]')]
+#
+# # Adding input source with month tag
+# missing_Hours_df['Close_Month'] = [f"{close_month}" for i in range(len(missing_Hours_df))]
+# missing_RID_df['Close_Month'] = [f"{close_month}" for i in range(len(missing_RID_df))]
+# missing_ProjectandTask_df['Close_Month'] = [f"{close_month}" for i in range(len(missing_ProjectandTask_df))]
+
+# Create XLSX file for Clarity upload - S12
+S12begin = datetime.now()
+start_times.append(datetime.now())
+
+# # Create XLSX file with missing resources data points
+# with pd.ExcelWriter(output_path + fileName + close_month + ' Missing Data.xlsx', engine = 'xlsxwriter') as writer:
+#     missing_Hours_df.to_excel(writer, sheet_name = 'Hours', index = False)
+#     missing_RID_df.to_excel(writer, sheet_name = 'RIDs', index = False)
+#     missing_ProjectandTask_df.to_excel(writer, sheet_name = 'ProjectIDs or Tasks', index = False)
+# print("\n" + fileName + close_month + " Missing Data.xlsx' file created to the " + output_path +
+#       "\nEach sheet corresponds to a field that is missing. Add missing fields from input files accordingly. Rerun "
+#       "this script to reduce risk of losing resource's timesheets. Note, only resources missing RIDs will be added "
+#       "for next month. You must manually add resources to the file unless you fix the input files and rerun this "
+#       "script.")
+
+full_df = full_df.sort_values(by = 'Resource Name', ascending = True)
+with pd.ExcelWriter(output_path + fileName + close_month + '.xlsx', engine = 'xlsxwriter') as writer:
+    full_df.to_excel(writer, index = False)
+warning = fileName + close_month + ".xlsx' file created to the " + output_path + "\nReady for Clarity ingestion."
+warning_messages.append(warning)
+S12end = datetime.now()
+end_times.append(datetime.now())
+
+# Creating End of Year (EOY) checklist in docx format - S13
+S13begin = datetime.now()
+start_times.append(datetime.now())
+if month == "September": # Trigger is September to run code below
+    doc = docx.Document()
+    doc.add_heading('Getting ready for the ' + year + ' Holidays!', 0)
+    doc.add_paragraph('There are two major areas that need to be addressed, the communications and the infrastructure. '
+                      'We’ve divided out the steps you need to take by month and relative timeline. Read below to find '
+                      'your high-level next steps. Note, the months listed below are referring to the calendar '
+                      'and not close month.')
+    doc.add_heading('October:', 1)
+    doc.add_heading('Comms:', 3)
+    doc.add_paragraph('Send out close dates for November and December closes which occur in December and January '
+                      'respectfully.', style='List Bullet')
+    doc.add_paragraph(
+        'Allow Data Providers, of the Google Sheets only, to sign up in a Google Sheet that you’ll provide '
+        'that says their name and their delegate. Give them 1 business week to fill out information then '
+        'close the sheet.', style='List Bullet')
+    doc.add_paragraph('Managers of Consultants who enter timesheets directly into Clarity must continue to approve '
+                      'timesheets. No delegates allowed.', style='List Bullet')
+    doc.add_heading('Infrastructure:', 3)
+    doc.add_paragraph('Create Google Sheet for Data Providers delegates. Have two columns. First column will be '
+                      '“Data Provider” prepopulated name from Codex. Second will be where the Data Provider will enter '
+                      'their delegates name. Reference Wiki article about rules of using delegates.',
+                      style='List Bullet')
+    doc.add_paragraph('Take Google Sheet and correct the delegates name if entered and input Codex spelling. Then add '
+                      'new “correct_data_providers” to the “correct_data_providers.csv” file. This will override the '
+                      'data provider with this information instead.', style='List Bullet')
+    doc.add_heading('November:', 1)
+    doc.add_heading('Comms:', 3)
+    doc.add_paragraph('Reiterate the close timeframe and to notify FM immediately before the Data Provider goes OOO '
+                      'of their delegate.', style='List Bullet')
+    doc.add_heading('Infrastructure:', 3)
+    doc.add_paragraph('Update “correct_data_providers” as necessary with feedback from Data Providers.',
+                      style='List Bullet')
+    doc.add_paragraph('Start working with Product and Finance teams to finalize the list of projects that will be used '
+                      'for capitalization.', style='List Bullet')
+    doc.add_paragraph('Remember to update Jira and all other internal documents for the updates.', style='List Bullet')
+    doc.add_heading('December:', 1)
+    doc.add_heading('Comms:', 3)
+    doc.add_paragraph('Release new close calendar reminders to data providers.', style='List Bullet')
+    doc.add_heading('Infrastructure:', 3)
+    doc.add_paragraph('Update dictionaries with new year’s close dates from the knowledge store in script otherwise '
+                      'script will fail.', style='List Bullet')
+    doc.add_heading('January:', 1)
+    doc.add_heading('Comms:', 3)
+    doc.add_paragraph('Reference everyone to the new close dates, projects, and any other updates located in the '
+                      'Wiki. Provide link to the wiki pages.', style='List Bullet')
+    doc.add_heading('Infrastructure:', 3)
+    doc.add_paragraph('Revert “correct managers.csv” file back to original entries since the holidays are over.',
+                      style='List Bullet')
+    doc.add_paragraph('Update any dictionaries such as new Project Names or IDs for new project year.',
+                      style='List Bullet')
+    doc.save("EOY_Activity_Checklist.docx") # TODO send file as an email/Slack
+
+    print("Get ready for the holidays! There's much work to be done. Follow the checklist called "
+          "\"EOY_Activity_Checklist.docx\". Learn what steps you need to prepart for in terms of communications and "
+          "updating the scripts and end user experience. This document is written at a medium level amount of detail. "
+          "Happy upcoming Holidays!")
+    warning = "Get ready for the holidays! There's much work to be done. Follow the checklist called " \
+              "\"EOY_Activity_Checklist.docx\". Learn what steps you need to prepart for in terms of communications" \
+              " and updating the scripts and end user experience. This document is written at a medium level amount " \
+              "of detail. Happy upcoming Holidays!"
+    warning_messages.append(warning)
+S13end = datetime.now()
+end_times.append(datetime.now())
+
+timesheet_vital_functions.print_warnings(warning_messages)
+
+def print_script_runtimes(start_times, end_times):
+    for time in end_times:
+        print(str(end_times[time] - start_times[time]))
+
+print_script_runtimes(start_times, end_times)
+
+if debug_mode == True:
+    print("Script run time: " + str(datetime.now() - beginTime) + "\n")
+    print("S1 run time was " + str(S1end - S1begin))
+    print("S2 run time was " + str(S2end - S2begin))
+    print("S3 run time was " + str(S3end - S3begin))
+    print("S4 run time was " + str(S4end - S4begin))
+    print("S5 run time was " + str(S5end - S5begin))
+    print("S6 run time was " + str(S6end - S6begin))
+    print("S7 run time was " + str(S7end - S7begin))
+    print("S8 run time was " + str(S8end - S8begin))
+    print("S9 run time was " + str(S9end - S9begin))
+    # print("S10 run time was " + str(S10end - S10begin))
+    # print("S11 run time was " + str(S11end - S11begin))
+    print("S12 run time was " + str(S12end - S12begin))
+    print("S13 run time was " + str(S13end - S13begin))
+exit()
