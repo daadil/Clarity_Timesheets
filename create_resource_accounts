@@ -1,0 +1,499 @@
+# Creates new resources Clarity RID numbers by creating a file to be uploaded to Clarity
+# Created by: David Adil
+# Date Created: June 2022
+try:
+    import pandas as pd, config, dateutil.relativedelta, warnings, get_DF_from_DB, codex_db_data_checker, getpass, glob
+    warnings.filterwarnings('ignore')
+    from datetime import datetime, date, timedelta
+    from dateutil.relativedelta import relativedelta
+except:
+    print("Please ensure you have the following libraries downloaded and supplemental scripts."
+          "\n dateutil.relativedelta"
+          "\n pandas"
+          "\n warnings"
+          "\n datetime"
+          "\n date"
+          "\n timedelta"
+          "\n relativedelta"
+          "\n configuration file called \"config.py\""
+          "\n supplemental scripts called \"get_DF_from_DB.py\" & \"codex_db_data_checker.py\"."
+         )
+    exit()
+
+# Establish global variables - S0
+S0begin = datetime.now()
+beginTime = datetime.now()
+debug_mode = False # True = Test data, False = PROD data
+warning_messages = []
+output_path = '~/Desktop/DTC_Timesheet_Artifacts/Output_for_timesheet_creation/'
+if debug_mode == True:
+    warning = "Debug mode is on. Using test data. Do not load any files to Prod sources."
+    warning_messages.append(warning)
+try:
+    df_list = get_DF_from_DB.load_dfs(debug_mode)
+    codex_df = df_list[0]
+    title_mapping_df = df_list[5]
+    vendor_df = df_list[1]
+except:
+    # warning = "Unable to create dataframes from PostGres database. Terminating script."
+    # warning_messages.append(warning)
+    print("Unable to create dataframes from PostGres database. Terminating script.")
+return1 = codex_db_data_checker.check_contract_rate_available(debug_mode, codex_df, "Contract_Rate")
+print(return1)
+
+codex_df = return1[0]
+warning_messages.append(return1[1])
+S0end = datetime.now()
+
+# Create file p aths & load file into a dataframe (df)- S1
+S1begin = datetime.now()
+try:
+    active_df = codex_df[(codex_df.DTC_Org == "Yes") &
+                         (codex_df.Budget_Group != "International") &
+                         (codex_df.Employment_Type != "Employee Intern") &
+                         (codex_df.Employment_Status == "Active") | (codex_df.Employment_Status == "Active - On Leave")]
+except:
+    # warning = "Something went wrong when filtering the data set for active resources dataframe."
+    # warning_messages.append(warning)
+    print("Something went wrong when filtering the data set for active resources dataframe.")
+    exit()
+if debug_mode == True:
+    current_date = datetime.strptime("2022-04-26", '%Y-%m-%d')
+else:
+    current_date = datetime.now()
+# Finding the duration of close
+# day = timedelta(days=1)
+# close_month_start = (current_date - dateutil.relativedelta.relativedelta(months=1)).strftime('%B_%Y')
+# previous_close_date = datetime.strptime(config.closedate_ref[close_month_start], '%Y-%m-%d') # Finds previous close day
+# month_end = current_date + (day * 5) # Tuesday to Sunday is always 5 days away
+# for dayCounter in range(1, 8):
+#     checkday = previous_close_date - (dayCounter * day)
+#     if checkday.isoweekday() == 1:  # 1 = Monday
+#         month_start = checkday
+#         break  # Finds first Monday of the month based on the Clarity calendar
+# # try:
+# #     departures_df = codex_df[(codex_df.DTC_Org == "Yes") &
+# #                              (codex_df.Budget_Group != "International") &
+# #                              (codex_df.Employment_Type == "Employee") &
+# #                              (codex_df.Employment_Status == "Departed")]
+# #     departures_df['Departure_Date'] = pd.to_datetime(departures_df['Departure_Date'], format='%Y-%m-%d')
+# # except:
+# #     print("Something went wrong when filtering the data set for departed resources dataframe.")
+# #     exit()
+# # try:
+# #     # Isolate close month duration
+# #     departures_df = departures_df.loc[(departures_df['Departure_Date'] >= month_start) &
+# #                                       (departures_df['Departure_Date'] < month_end)]
+# # except:
+# #     print("\nSomething went wrong when finding the close month duration in departures dataframe.")
+# #     exit()
+# #
+# # data_df = active_df.append(departures_df) # Create holistic df for close
+S1end = datetime.now()
+
+#Create Clarity new accounts & departure files - S2
+S2begin = datetime.now()
+def clarity_extract(emp_status):
+    if emp_status == "Active":
+        # Filter df for active resources
+        clarity_df = codex_df[(codex_df.DTC_Org == "Yes") &
+                              (codex_df.Budget_Group != "International") &
+                              (codex_df.Employment_Type != "Employee Intern") &
+                              (codex_df.Employment_Status == "Active") &
+                              (codex_df.Clarity_Resource_ID == "[Required]")]
+
+        # Creates departure column for Clarity accounts
+        clarity_df.insert(0, 'Termination_Date(Optional)', '') #TODO needs to set consultants end date 3 months from system date (check if this is needed by testing with consultant new accounts as blank.)
+
+    elif emp_status == "Departed":
+        # Filter df for departed resources
+        clarity_df = codex_df[(codex_df.DTC_Org == "Yes") &
+                              (codex_df.Budget_Group != "International") &
+                              (codex_df.Employment_Type != "Employee Intern") &
+                              (codex_df.Employment_Status == "Departed") &
+                              (codex_df.Clarity_Resource_ID != "[Not Required]")]
+
+        # Creates departure (from 2 months ago) list for Clarity accounts
+        older_month = date.today().replace(day=1) - relativedelta(months=3)
+        newer_month = date.today().replace(day=1) - relativedelta(months=2)
+        clarity_df['Departure_Date'] = pd.to_datetime(clarity_df.Departure_Date, format='%m/%d/%Y').dt.date
+        clarity_df = clarity_df.loc[(clarity_df['Departure_Date'] >= older_month) &
+                                    (clarity_df['Departure_Date'] <= newer_month)]
+        clarity_df['Departure_Date'] = clarity_df['Departure_Date'].apply(
+                                                                            lambda x: x.strftime('%-m/%-d/%Y')
+                                                                         )
+        clarity_df.rename(columns={'Departure_Date': 'Termination_Date(Optional)'}, inplace=True)
+        # TODO check codex for resources who still are active. Need to check all rows in Codex. If a row contains the resource as active then drop them from df. If all rows show the resource as departed then keep in df.
+
+    #TODO ask if there should be an else statement to cover possible error in logic
+
+    # Splits name into Last and First name
+    clarity_df['Resource_Last_Name'] = clarity_df['Resource_Name'].apply(
+                                                                            lambda x: x.split(',')[0].strip()
+                                                                        )
+    clarity_df['Resource_First_Name'] = clarity_df['Resource_Name'].apply(
+                                                                            lambda x: x.split(',')[1].strip()
+                                                                         )
+    # Assigns Departments to resources based on budget group and VP
+    clarity_df.insert(0, 'Resource_Department', '')
+
+    # i = 0
+    # for index in enumerate(config.vpName):
+    #     print("test")
+    #     clarity_df['Resource_Department'] = clarity_df.apply(lambda x: config.US_deptCodes[i]
+    #     if (x['Budget_Group'] == 'US')
+    #         and (x['Department_VP'] == config.vpName[i])
+    #     else x['Resource_Department'], axis = 1)
+    #     print(i)
+    #     i = i + 1
+    #
+    # i = 0
+    # for index in enumerate(config.vpName):
+    #     clarity_df['Resource_Department'] = clarity_df.apply(lambda x: config.CA_deptCodes[i]
+    #     if (x['Budget_Group'] == 'Canada')
+    #        and (x['Department_VP'] == config.vpName[i])
+    #     else x['Resource_Department'], axis=1)
+    #     i = i + 1
+
+    #TODO: Replace below with a dictionary retrival process
+
+    # def resource_Department(budgetGroup):
+    #     print(budgetGroup)
+    #     if budgetGroup == "You.i":
+    #         print("test")
+    #
+    # resource_Department("You.i")
+
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[0]
+                                                            if (x['Budget_Group'] == 'US')
+                                                                and (x['Department_VP'] == config.vpName[0])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[0]
+                                                            if (x['Budget_Group'] == 'US')
+                                                                and (x['Department_VP'] == config.vpName[1])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[1]
+                                                            if (x['Budget_Group'] == 'US')
+                                                                and (x['Department_VP'] == config.vpName[2])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[2]
+                                                            if (x['Budget_Group'] == 'Canada')
+                                                                and (x['Department_VP'] == config.vpName[2])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[3]
+                                                            if (x['Budget_Group'] == 'US')
+                                                                and (x['Department_VP'] == config.vpName[3])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[4]
+                                                            if (x['Budget_Group'] == 'US')
+                                                                and (x['Department_VP'] == config.vpName[4])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[5]
+                                                            if (x['Budget_Group'] == 'Canada')
+                                                                and (x['Department_VP'] == config.vpName[4])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[6]
+                                                            if (x['Budget_Group'] == 'US')
+                                                                and (x['Department_VP'] == config.vpName[5])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[7]
+                                                            if (x['Budget_Group'] == 'Canada')
+                                                                and (x['Department_VP'] == config.vpName[6])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+    clarity_df['Resource_Department'] = clarity_df.apply(
+                                                            lambda x: config.deptCodes[8]
+                                                            if (x['Budget_Group'] == 'Canada')
+                                                                and (x['Department_VP'] == config.vpName[6])
+                                                            else x['Resource_Department'], axis=1
+                                                        )
+
+    # Sets Resource Manager field to Yes for Mgr, Dir, or VP in title
+    try:
+        clarity_df['Resource_Manager'] = clarity_df.apply(
+                                                            lambda x: "Yes"
+                                                            if (('Mgr' in x['Job_Title'] or 'Dir' in x['Job_Title'] or
+                                                                 'VP' in x['Job_Title'])
+                                                                and (x['Employment_Type'] == 'Employee'))
+                                                            else "No", axis = 1
+                                                         )
+    except:
+        # Set no one as a resource manager in system
+        clarity_df['Resource_Manager'] = ["No" for i in range(len(clarity_df))]
+        warning_messages.append("Assigning if Resource Manager failed in creating Clarity upload file.")
+    # Sets job title mapping from Codex to Clarity
+    ctm_dict = {}
+    for row in title_mapping_df:
+        org_val = row[0]
+        domestic_val = row[2]
+        youi_val = row[4]
+        if org_val in ctm_dict:
+            continue
+        else:
+            ctm_dict[org_val] = \
+                {
+                    config.budgetGroups[0]: domestic_val,
+                    config.budgetGroups[1]: youi_val
+                }
+    clarity_df['Job_Title'] = clarity_df.apply(
+                                                lambda x: ctm_dict[x['Job_Title']][x["Budget_Group"]]
+                                                if (x['Job_Title'] in ctm_dict)
+                                                else "", axis = 1
+                                              )
+    # Assigns Ottawa Consultant Job Title
+    clarity_df['Job_Title'] = clarity_df.apply(
+                                                lambda x: 'WMTO - DTC Ottawa Consultant'
+                                                if (x['Employment_Type'] == 'Consultant')
+                                                    and (x['Budget_Group'] == config.budgetGroups[1])
+                                                else x['Job_Title'], axis = 1
+                                              )
+    # Assigns US Consultant Job Title
+    clarity_df['Job_Title'] = clarity_df.apply(
+                                                lambda x: 'WMTO - DTC US Consultant'
+                                                if (x['Employment_Type'] == 'Consultant')
+                                                    and (x['Budget_Group'] == config.budgetGroups[0])
+                                                else x['Job_Title'], axis = 1
+                                              )
+    # Finds Resource Manager email of resource
+    mgr_email = codex_df.copy() # Makes an actual copy of the df not just points to location
+    mgr_email = mgr_email.merge(codex_df, left_on = 'Reporting_Manager', right_on = 'Resource_Name', how = 'right')
+    df = pd.DataFrame(mgr_email, columns = ['Codex_ID_x', 'Email_x', 'Email_y'])
+    df.rename(columns = {
+                            'Email_x': 'Email',
+                            'Email_y': 'Resource_Manager_Email',
+                            'Codex_ID_x':'Codex_ID'
+                        }, inplace = True)
+    # Joining on two fields creates unique identifier
+    clarity_df = pd.merge(clarity_df, df, on = ['Email', 'Codex_ID'], how = 'inner')
+
+    # Creates missing fields and adds information
+    vendor_df.rename(columns = {'Codex_Agency_Name': 'Contract_Agency'}, inplace = True)
+    try:
+        clarity_df = pd.merge(clarity_df, vendor_df, on = "Contract_Agency", how = 'left')
+    except:
+        clarity_df['Clarity_Agency_Name'] = clarity_df.apply(
+                                                            lambda x: "Manual Assignment Required"
+                                                            if 'Contractor' in x['Employment_Type']
+                                                            else x['Clarity_Agency_Name'], axis=1
+                                                       )
+    clarity_df.rename(columns={'Clarity_Agency_Name': 'Vendor'}, inplace=True)
+
+    clarity_df['Employment_Type'] = clarity_df['Employment_Type'].replace(['Consultant'], 'Contractor')
+    # Set all to DTC Org
+    clarity_df['Resource_OBS'] = ["Direct-To-Consumer (DTC) Technology and Program Management"
+                                  for i in range(len(clarity_df))]
+    # Set all to 8 hours
+    clarity_df['Availability'] = ["8" for i in range(len(clarity_df))]
+    # Set all to have time entry available
+    clarity_df['Time_Entry'] = ["Yes" for i in range(len(clarity_df))]
+    # Set no one as an approver for timesheets
+    clarity_df['Reviewer_Approver'] = ["No" for i in range(len(clarity_df))]
+    # Set no one as an project manager in system
+    clarity_df['Project_Manager'] = ["No" for i in range(len(clarity_df))]
+    try:
+        # Sets location tag
+        clarity_df['Office_Address'] = clarity_df.apply(
+                                                            lambda x: "Onshore"
+                                                            if 'America' in x['Office_Address']
+                                                            else "Offshore", axis = 1
+                                                       )
+    except:
+        clarity_df['Office_Address'] = ["Manual Assignment Required" for i in range(len(clarity_df))]
+    clarity_df.rename(columns = {'Office_Address': 'Offshore'}, inplace = True)
+    # Remove unnecessary fields, sets columns in specific order, and sorts last name by ASC
+    clarity_df = clarity_df[["Codex_ID", "Resource_Last_Name", "Resource_First_Name", "Email", "Job_Title", "Employment_Type",
+                             'Resource_Manager_Email', "Resource_Department", "Resource_OBS",
+                             "Termination_Date(Optional)", "Availability", "Contract_Rate", "Vendor", "Time_Entry",
+                             "Reviewer_Approver", "Project_Manager", "Resource_Manager", "Offshore"]]
+    clarity_df.sort_values(by = ['Resource_Last_Name', 'Resource_Manager_Email'], inplace = True)
+    clarity_df['Contract_Rate'] = clarity_df['Contract_Rate'].astype('str').replace('$', '')
+    clarity_df['Contract_Rate'] = clarity_df.apply(
+                                                        lambda x: ""
+                                                        if 'nan' in x['Contract_Rate']
+                                                        else x['Contract_Rate'], axis=1
+                                                   )
+    # Rename fields for Clarity ingest
+    update_header = {
+                        'Email': 'Resource_Email_Address',
+                        'Contract_Rate': 'Rate',
+                        'Employment_Type': 'Resource_Emp_Type',
+                        'Job_Title': 'Resource_Primary_Role'
+                     }
+    clarity_df.rename(columns = update_header, inplace = True)
+    # Output file for Clarity ingest
+    if emp_status == "Active":
+        with pd.ExcelWriter(output_path + 'New_Accounts_Resource_Upload_' + beginTime.strftime("%Y-%m-%d") + '.xlsx',
+                            engine = 'xlsxwriter') as writer:
+            clarity_df.to_excel(writer, index = False)
+        # warning = "To be created Clarity accounts file ready. Please use the file staring with, "
+        #               "\"New_Accounts_Resource_Upload\" when using Clarity."
+        # warning_messages.append(warning)
+        print("To be created Clarity accounts file ready. Please use the file staring with, "
+              "\"New_Accounts_Resource_Upload\" when using Clarity.")
+    if emp_status == "Departed":
+        with pd.ExcelWriter(output_path + 'Depart_Accounts_Resource_Upload_' + beginTime.strftime("%Y-%m-%d") + '.xlsx',
+                            engine = 'xlsxwriter') as writer:
+            clarity_df.to_excel(writer, index = False)
+        print("To be terminated Clarity accounts file ready. Please use the file starting with, "
+              "\"Depart_Accounts_Resource_Upload\" when using Clarity.")
+    return clarity_df
+
+emp = "Active"
+clarity_df = clarity_extract(emp)
+emp = "Departed"
+clarity_extract(emp)
+S2end = datetime.now()
+exit()
+
+
+import io
+
+username = getpass.getuser()
+extension = f"/Users/{username}/Downloads/"
+excel_file = glob.glob(f'{extension}DTC_CODEX_v*.xlsx')[0]
+f = open(excel_file, 'rb')
+codex_df = pd.read_excel(f, sheet_name='CODEX')
+f.close()
+
+output = io.BytesIO()
+
+with pd.ExcelWriter(output, engine = 'xlsxwriter') as writer:
+            codex_df.to_excel(writer, index = False)
+
+# Purpose
+#
+# Shows how to send email by using an Amazon Pinpoint SMTP server.
+# """
+# # TODO SMTP server obviously has restrictions based on the SMTP user.
+# #  Since it’s an AWS resource, it might be the SRE team who will need to create a new account that allows
+# #  a different sending email.
+#
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+import logging, smtplib, config, email.encoders
+
+logger = logging.getLogger(__name__)
+
+
+def send_smtp_message(
+        smtp_server, smtp_username, smtp_password, sender, to_address, cc_address,
+        subject, html_message, text_message, attachment):
+    """
+    Sends an email by using an Amazon Pinpoint SMTP server.
+
+    :param smtp_server: An smtplib SMTP session.
+    :param smtp_username: The username to use to connect to the SMTP server.
+    :param smtp_password: The password to use to connect to the SMTP server.
+    :param sender: The "From" address. This address must be verified.
+    :param to_address: The "To" address. If your account is still in the sandbox,
+                       this address must be verified.
+    :param cc_address: The "CC" address. If your account is still in the sandbox,
+                       this address must be verified.
+    :param subject: The subject line of the email.
+    :param html_message: The HTML body of the email.
+    :param text_message: The email body for recipients with non-HTML email clients.
+    """
+    # Create message container. The correct MIME type is multipart/alternative.
+    msg = MIMEMultipart('alternative')
+    msg['From'] = sender
+    msg['To'] = to_address
+    msg['Cc'] = cc_address
+    msg['Subject'] = subject
+    msg.attach(MIMEText(html_message, 'html'))
+    msg.attach(MIMEText(text_message, 'plain'))
+
+    email.encoders.encode_base64(attachment)
+    msg.attach(attachment)
+
+    smtp_server.ehlo()
+    smtp_server.starttls()
+    smtp_server.ehlo()
+    smtp_server.login(smtp_username, smtp_password)
+    smtp_server.sendmail(sender, to_address, msg.as_string())
+
+def main():
+    host = config.mail_smtp_host
+    port = 587 # Secure channel, do not change
+    sender = "jira@jira.dp.hbo.com"
+    to_address = "david.adil@warnermedia.com"
+    cc_address = ""
+    subject = 'Amazon Pinpoint Test (Python smtplib)'
+    text_message = (
+        "Amazon Pinpoint Test\r\n"
+        "This email was sent through the Amazon Pinpoint SMTP "
+        "interface using the Python smtplib package.")
+    html_message = """<html>
+                        <head></head>
+                        <body>
+                          <h1>Amazon Pinpoint SMTP Email Test</h1>
+                          <p>This email was sent with Amazon Pinpoint using the
+                            <a href='https://www.python.org/'>Python</a>
+                            <a href='https://docs.python.org/3/library/smtplib.html'>
+                            smtplib</a> library.</p>
+                        </body>
+                      </html>"""
+
+    # TODO attach df as xlsx file to email
+    attachment = MIMEBase('application', 'xlsx')
+    attachment.set_payload(output.getvalue())
+    attachment.add_header('Content-Disposition', 'attachment', filename='temp_codex_email_test.xlsx')
+
+    smtp_username = config.mail_smtp_user
+    smtp_password = config.mail_smtp_password
+
+    print("Sending email through SMTP server.")
+    try:
+        with smtplib.SMTP(host, port) as smtp_server:
+            send_smtp_message(
+                smtp_server, smtp_username, smtp_password, sender, to_address,
+                cc_address, subject, html_message, text_message, attachment)
+    except Exception:
+        logger.exception("Couldn't send message.")
+        raise
+    else:
+        print("Email sent!")
+
+
+if __name__ == '__main__':
+    main()
+
+# End of script
+# print("\nFiles created in path \"/Desktop/DTC_Timesheet_Artifacts/Output_for_timesheet_creation/\"")
+# if debug_mode == True:
+#     print("Script total run time was " + str(datetime.now() - beginTime))
+#     print("S0 run time was " + str(S0end - S0begin))
+#     print("S1 run time was " + str(S1end - S1begin))
+#     print("S2 run time was " + str(S2end - S2begin))
+#     # print("S3 run time was " + str(S3end - S3begin))
+#     # print("S4 run time was " + str(S4end - S4begin))
+#     # print("S5 run time was " + str(S5end - S5begin))
+#     # print("S6 run time was " + str(S6end - S6begin))
+#     # print("S7 run time was " + str(S7end - S7begin))
+#     # print("S8 run time was " + str(S8end - S8begin))
+#     # print("S9 run time was " + str(S9end - S9begin))
+#     # print("S10 run time was " + str(S10end - S10begin))
+#     # print("S11 run time was " + str(S11end - S11begin))
+#     # print("S12 run time was " + str(S12end - S12begin))
+#
+# for warnings in range(len(warning_messages)):
+#     print(warning_messages[warnings] + "\n")
+
+exit()
