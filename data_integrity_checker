@@ -1,0 +1,19 @@
+# Checks if certain columns are within df from database, if not, then uses local copy of WorkDay extract instead of DB
+
+import getpass, glob, pandas as pd
+
+def check_contract_rate_available(debug_mode, codex_df, column):
+    if {column}.issubset(codex_df.columns):
+        return codex_df
+    else:
+        username = getpass.getuser()
+        extension = f"/Users/{username}/Downloads/"
+        if debug_mode == True:
+            excel_file = glob.glob(f'{extension}/Test_Data/DTC_CODEX_Test_v*.xlsx')[0]
+        else:
+            excel_file = glob.glob(f'{extension}DTC_CODEX_v*.xlsx')[0]
+        f = open(excel_file, 'rb')
+        codex_df = pd.read_excel(f, sheet_name = 'CODEX')
+        warning = "WARNING - Codex DB missing required column \"Contract_Rate\". Using downloaded Codex, " \
+                  "data may be stale."
+        return codex_df, warning
