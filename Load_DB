@@ -1,0 +1,140 @@
+# Load DTC_Codex_v#.#.xlsx to database
+# David Adil May 2022
+import config, pandas as pd, getpass, glob
+from sqlalchemy import create_engine
+from datetime import datetime
+
+
+# Global variables initialized - S0
+S0begin = datetime.now()
+beginTime = datetime.now()
+debug_mode = True # True = Test data, False = PROD data
+table_names = ["codex_codex", "codex_vendor", "codex_themes", "codex_correct_dp", "codex_ts_autofill",
+               "codex_title_mapping", "codex_codex_test"]
+conn_string = f'postgresql://{config.per_pg_db_user}:{config.per_pg_db_pwd}@{config.per_pg_db_host}:'\
+              f'{config.per_pg_db_port}/{config.per_pg_db_name}'
+engine = create_engine(conn_string)
+connection = engine.connect()
+i = 0
+S0end = datetime.now()
+
+# Listing all functions - S1
+S1begin = datetime.now()
+def load_codex_df():
+    username = getpass.getuser()
+    extension = f"/Users/{username}/Downloads/"
+    excel_file = glob.glob(f'{extension}DTC_CODEX_v*.xlsx')[0]
+    f = open(excel_file, 'rb')
+    try:
+        codex_df = pd.read_excel(f, sheet_name='CODEX')
+        title_mapping_df = pd.read_excel(f, sheet_name='Job_Family')
+        vendor_df = pd.read_excel(f, sheet_name='Vendors')
+        themes_df = pd.read_excel(f, sheet_name='Themes')
+        correct_dp_df = pd.read_excel(f, sheet_name='Correct_Data_Providers')
+        ts_autofill_df = pd.read_excel(f, sheet_name='timesheet_autofill')
+        f.close()
+        excel_file = glob.glob(f'{extension}Test_Data/DTC_CODEX_Test_v*.xlsx')[0]
+        f = open(excel_file, 'rb')
+        codex_test_df = pd.read_excel(f, sheet_name='CODEX')
+        f.close()
+        codex_df = codex_df.drop(['Contract_Rate'], axis = 1)
+        codex_test_df = codex_test_df.drop(['Contract_Rate'], axis = 1)
+        df_list = [codex_df, vendor_df, themes_df, correct_dp_df, ts_autofill_df, title_mapping_df, codex_test_df]
+    except:
+        print("Missing Codex Excel file from Downloads Folder. Terminating script.")
+    return df_list
+S1end = datetime.now()
+
+# Converts Codex xlsx to dfs - S2
+S2begin = datetime.now()
+df_list = load_codex_df() # Create list of dfs
+S2end = datetime.now()
+
+# Sends dfs to tables in DB - S3
+S3begin = datetime.now()
+try:
+    for df in df_list:
+        print(table_names[i])
+        df.to_sql(table_names[i], con = connection, if_exists = 'replace', index = False)
+        i += 1
+        # index = df_list.index(df)
+        # df.to_sql(table_names[index], con = connection, if_exists = 'replace', index = False)
+except:
+    print(f"Failure on loading dataframe {table_names[i]}")
+    # print(f"Failure on loading dataframe {table_names[index]}")
+connection.close()
+S3end = datetime.now()
+
+# End of script
+if debug_mode == True:
+    print("Script total run time was " + str(datetime.now() - beginTime))
+    print("S0 run time was " + str(S0end - S0begin))
+    print("S1 run time was " + str(S1end - S1begin))
+    print("S2 run time was " + str(S2end - S2begin))
+    print("S3 run time was " + str(S3end - S3begin))
+    # print("S4 run time was " + str(S4end - S4begin))
+    # print("S5 run time was " + str(S5end - S5begin))
+    # print("S6 run time was " + str(S6end - S6begin))
+    # print("S7 run time was " + str(S7end - S7begin))
+    # print("S8 run time was " + str(S8end - S8begin))
+    # print("S9 run time was " + str(S9end - S9begin))
+    # print("S10 run time was " + str(S10end - S10begin))
+    # print("S10 run time was " + str(S11end - S11begin))
+    # print("S10 run time was " + str(S12end - S12begin))
+    print(f"{debug_mode=}")
+exit()
+
+# CREATE TABLE codex_test (
+# Codex_ID VARCHAR primary key,
+# Workday_ID VARCHAR,
+# Clarity_Resource_ID VARCHAR,
+# Resource_Name VARCHAR,
+# Preferred_Name VARCHAR,
+# Email VARCHAR,
+# Employment_Type VARCHAR,
+# Employment_Status VARCHAR,
+# DTC_Org VARCHAR,
+# DTC_Paid VARCHAR,
+# Budget_Group VARCHAR,
+# Consultant_Converted_to_Employee VARCHAR,
+# Start_Date VARCHAR,
+# Departure_Date VARCHAR,
+# Seniority_Level VARCHAR,
+# Contract_Agency VARCHAR,
+# Contract_Rate VARCHAR,
+# Contract_Type VARCHAR,
+# Job_Title VARCHAR,
+# Department_VP VARCHAR,
+# Reporting_Manager VARCHAR,
+# Counting_Group VARCHAR,
+# Office_Address VARCHAR,
+# City VARCHAR);
+
+# CREATE TABLE title_mapping (
+# job_family VARCHAR NOT NULL,
+# job_title_by_ladder VARCHAR NOT NULL,
+# seniority VARCHAR NOT NULL,
+# clarity_role_us VARCHAR,
+# Job_Title_Count_Active_and_TBH_in_US_Budget_Group VARCHAR,
+# Clarity_Role_Ottawa VARCHAR,
+# Job_Title_Count_Active_and_TBH_in_Ottawa_Budget_Group VARCHAR
+# );
+
+# CREATE TABLE vendor (
+# Codex_agency_name VARCHAR NOT NULL,
+# clarity_agency_name VARCHAR NOT NULL
+# );
+
+# CREATE TABLE themes (
+# Theme VARCHAR,
+# Clarity_ProjectID VARCHAR
+# );
+
+# CREATE TABLE correct_dp (
+# Name VARCHAR,
+# Reporting_Manager VARCHAR
+# );
+
+# CREATE TABLE ts_autofill (
+# Resource_Name VARCHAR
+# );
